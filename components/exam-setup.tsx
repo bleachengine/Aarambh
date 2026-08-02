@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useCallback } from 'react';
-import { SparklesIcon, LoaderIcon } from '@/components/icons';
+import { SparklesIcon } from '@/components/icons';
 import { AppHeader } from '@/components/app-header';
 import { Button } from '@/components/ui/button';
 import {
@@ -30,7 +30,6 @@ interface ExamSetupProps {
     difficulty: Difficulty;
     expansion: number;
   }) => Promise<void>;
-  loading: boolean;
   error: string | null;
   onViewHistory: () => void;
 }
@@ -70,7 +69,7 @@ const EXPANSION_LEVELS = [
   { value: 90, label: 'Exploratory', desc: 'Adds real-world scenarios and applied, higher-order questions.' },
 ];
 
-export function ExamSetup({ onGenerate, loading, error, onViewHistory }: ExamSetupProps) {
+export function ExamSetup({ onGenerate, error, onViewHistory }: ExamSetupProps) {
   const [topic, setTopic] = useState('');
   const [mcqCount, setMcqCount] = useState(10);
   const [descriptiveCount, setDescriptiveCount] = useState(3);
@@ -80,7 +79,7 @@ export function ExamSetup({ onGenerate, loading, error, onViewHistory }: ExamSet
   const handleSubmit = useCallback(
     (e: React.FormEvent) => {
       e.preventDefault();
-      if (!topic.trim() || loading) return;
+      if (!topic.trim()) return;
       onGenerate({
         topic: topic.trim(),
         mcqCount,
@@ -89,7 +88,7 @@ export function ExamSetup({ onGenerate, loading, error, onViewHistory }: ExamSet
         expansion: EXPANSION_LEVELS[expansionIndex].value,
       });
     },
-    [topic, mcqCount, descriptiveCount, difficulty, expansionIndex, loading, onGenerate],
+    [topic, mcqCount, descriptiveCount, difficulty, expansionIndex, onGenerate],
   );
 
   const applyExample = (p: string) => {
@@ -98,7 +97,7 @@ export function ExamSetup({ onGenerate, loading, error, onViewHistory }: ExamSet
 
   return (
     <div className="mx-auto w-full max-w-7xl px-4 py-8 sm:px-6 sm:py-8 lg:px-8">
-      <AppHeader action={{ type: 'history', onClick: onViewHistory, disabled: loading }} />
+      <AppHeader action={{ type: 'history', onClick: onViewHistory }} />
 
       <p className="mb-2 text-sm text-muted-foreground sm:text-base">
         Generate a complete, AI-authored exam on any subject - then get it graded with examiner-level feedback.
@@ -131,7 +130,6 @@ export function ExamSetup({ onGenerate, loading, error, onViewHistory }: ExamSet
                 value={topic}
                 onChange={(e) => setTopic(e.target.value)}
                 placeholder="e.g. Make a test on Indian Heritage and Culture"
-                disabled={loading}
                 maxLength={300}
                 rows={2}
                 className="flex w-full resize-none rounded-md border border-input bg-background px-4 py-3 text-base shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
@@ -143,7 +141,6 @@ export function ExamSetup({ onGenerate, loading, error, onViewHistory }: ExamSet
                     key={p}
                     type="button"
                     onClick={() => applyExample(p)}
-                    disabled={loading}
                     className="rounded-full border border-border bg-accent/40 px-3 py-1 text-xs text-foreground/70 transition-colors hover:border-primary/40 hover:bg-accent/80 hover:text-foreground disabled:opacity-50"
                   >
                     {p}
@@ -166,7 +163,6 @@ export function ExamSetup({ onGenerate, loading, error, onViewHistory }: ExamSet
                   max={30}
                   step={1}
                   onValueChange={(v) => setMcqCount(v[0])}
-                  disabled={loading}
                 />
                 <p className="text-xs text-muted-foreground">Multiple choice (0-30)</p>
               </div>
@@ -184,7 +180,6 @@ export function ExamSetup({ onGenerate, loading, error, onViewHistory }: ExamSet
                   max={10}
                   step={1}
                   onValueChange={(v) => setDescriptiveCount(v[0])}
-                  disabled={loading}
                 />
                 <p className="text-xs text-muted-foreground">Paragraph questions (0-10)</p>
               </div>
@@ -194,7 +189,6 @@ export function ExamSetup({ onGenerate, loading, error, onViewHistory }: ExamSet
                 <Select
                   value={difficulty}
                   onValueChange={(v) => setDifficulty(v as Difficulty)}
-                  disabled={loading}
                 >
                   <SelectTrigger className="h-11">
                     <SelectValue />
@@ -228,7 +222,6 @@ export function ExamSetup({ onGenerate, loading, error, onViewHistory }: ExamSet
                   max={EXPANSION_LEVELS.length - 1}
                   step={1}
                   onValueChange={(v) => setExpansionIndex(v[0])}
-                  disabled={loading}
                 />
                 <div className="flex justify-between text-[11px]">
                   {EXPANSION_LEVELS.map((level, i) => (
@@ -246,19 +239,12 @@ export function ExamSetup({ onGenerate, loading, error, onViewHistory }: ExamSet
                 type="submit"
                 size="lg"
                 className="h-11 shrink-0 px-6 text-base"
-                disabled={loading || !topic.trim() || (mcqCount === 0 && descriptiveCount === 0)}
+                disabled={!topic.trim() || (mcqCount === 0 && descriptiveCount === 0)}
               >
-                {loading ? (
-                  <span className="flex items-center gap-2">
-                    <LoaderIcon className="h-5 w-5 animate-spin" />
-                    Generating...
-                  </span>
-                ) : (
-                  <span className="flex items-center gap-2">
-                    <SparklesIcon className="h-5 w-5" />
-                    Generate Exam
-                  </span>
-                )}
+                <span className="flex items-center gap-2">
+                  <SparklesIcon className="h-5 w-5" />
+                  Generate Exam
+                </span>
               </Button>
             </div>
           </form>

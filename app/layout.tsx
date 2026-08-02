@@ -5,7 +5,7 @@ import { Inter } from 'next/font/google';
 const inter = Inter({ subsets: ['latin'], display: 'swap' });
 
 const SITE_URL = 'https://aarambh-xi.vercel.app';
-const TITLE = 'ExamForge - AI Exam Generator & Evaluator';
+const TITLE = 'Aarambh - AI Exam Generator & Evaluator';
 const DESCRIPTION =
   'Generate and evaluate AI-powered exams on any subject, topic, or skill. Enter a prompt, customize your test, and get instant, detailed feedback.';
 
@@ -24,7 +24,7 @@ export const metadata: Metadata = {
     title: TITLE,
     description: DESCRIPTION,
     url: SITE_URL,
-    siteName: 'ExamForge',
+    siteName: 'Aarambh',
     type: 'website',
     locale: 'en_US',
   },

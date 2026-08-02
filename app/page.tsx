@@ -5,6 +5,7 @@ import { ExamSetup } from '@/components/exam-setup';
 import { ExamRunner } from '@/components/exam-runner';
 import { ExamResults } from '@/components/exam-results';
 import { ExamHistory } from '@/components/exam-history';
+import { LoadingScreen } from '@/components/loading-screen';
 import type { Difficulty, GeneratedExam, EvaluationResult, ExamHistoryItem } from '@/lib/types';
 
 type Phase = 'setup' | 'exam' | 'results' | 'history';
@@ -131,6 +132,10 @@ export default function Home() {
     setPhase('exam');
   }, []);
 
+  if (loading || submitting) {
+    return <LoadingScreen />;
+  }
+
   if (phase === 'history') {
     return <ExamHistory onBack={handleBackToSetup} onSelect={handleSelectHistoryItem} onResume={handleResumeHistoryItem} />;
   }
@@ -141,7 +146,6 @@ export default function Home() {
         exam={exam}
         onSubmit={handleSubmit}
         onBack={cameFromHistory ? handleBackToHistory : handleBackToSetup}
-        submitting={submitting}
         error={error}
       />
     );
@@ -161,7 +165,6 @@ export default function Home() {
   return (
     <ExamSetup
       onGenerate={handleGenerate}
-      loading={loading}
       error={error}
       onViewHistory={handleViewHistory}
     />

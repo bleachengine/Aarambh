@@ -8,6 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { fetchExamHistory, fetchExamById, deleteExamHistoryItem } from '@/lib/history';
 import { isSupabaseConfigured } from '@/lib/supabase';
+import { LoadingScreen } from '@/components/loading-screen';
 import type { ExamHistoryItem, GeneratedExam } from '@/lib/types';
 
 interface ExamHistoryProps {
@@ -95,6 +96,10 @@ export function ExamHistory({ onBack, onSelect, onResume }: ExamHistoryProps) {
     }
   };
 
+  if (loading) {
+    return <LoadingScreen />;
+  }
+
   return (
     <div className="mx-auto w-full max-w-7xl px-4 py-8 sm:px-6 sm:py-10 lg:px-10">
       <AppHeader />
@@ -118,9 +123,7 @@ export function ExamHistory({ onBack, onSelect, onResume }: ExamHistoryProps) {
           </div>
         )}
 
-        {loading ? (
-          <p className="text-sm text-muted-foreground">Loading...</p>
-        ) : !isSupabaseConfigured ? (
+        {!isSupabaseConfigured ? (
           <Card className="shadow-sm">
             <CardContent className="py-10 text-center text-sm text-muted-foreground">
               History isn&apos;t available - Supabase isn&apos;t configured for this app.

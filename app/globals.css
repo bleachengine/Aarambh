@@ -3,8 +3,8 @@
 
 @layer base {
   :root {
-    /* #e3f4ff */
-    --background: 204 100% 95%;
+    /* #e6f7ff */
+    --background: 199 100% 95%;
     --foreground: 222 47% 11%;
     --card: 0 0% 100%;
     --card-foreground: 222 47% 11%;

@@ -8,7 +8,6 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
   SendIcon,
-  LoaderIcon,
   AlertCircleIcon,
 } from '@/components/icons';
 import { Button } from '@/components/ui/button';
@@ -28,11 +27,10 @@ interface ExamRunnerProps {
   exam: GeneratedExam;
   onSubmit: (answers: Record<string, string | null>) => Promise<void>;
   onBack: () => void;
-  submitting: boolean;
   error: string | null;
 }
 
-export function ExamRunner({ exam, onSubmit, onBack, submitting, error }: ExamRunnerProps) {
+export function ExamRunner({ exam, onSubmit, onBack, error }: ExamRunnerProps) {
   const [answers, setAnswers] = useState<Record<string, string | null>>({});
   const [currentIdx, setCurrentIdx] = useState(0);
   const [showSubmitConfirm, setShowSubmitConfirm] = useState(false);
@@ -76,18 +74,18 @@ export function ExamRunner({ exam, onSubmit, onBack, submitting, error }: ExamRu
     return () => window.removeEventListener('keydown', handler);
   }, [goNext, goPrev]);
 
-  // Warn before leaving the tab if answers exist or a submission is mid-flight,
-  // so an accidental refresh/close doesn't silently lose progress.
+  // Warn before leaving the tab if answers exist, so an accidental
+  // refresh/close doesn't silently lose progress.
   useEffect(() => {
     const handler = (e: BeforeUnloadEvent) => {
-      if (answeredCount > 0 || submitting) {
+      if (answeredCount > 0) {
         e.preventDefault();
         e.returnValue = '';
       }
     };
     window.addEventListener('beforeunload', handler);
     return () => window.removeEventListener('beforeunload', handler);
-  }, [answeredCount, submitting]);
+  }, [answeredCount]);
 
   useEffect(() => {
     if (!showSubmitConfirm) return;
@@ -110,8 +108,7 @@ export function ExamRunner({ exam, onSubmit, onBack, submitting, error }: ExamRu
       <div className="mb-6 animate-fade-in">
         <button
           onClick={onBack}
-          disabled={submitting}
-          className="mb-4 inline-flex items-center text-sm text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
+          className="mb-4 inline-flex items-center text-sm text-muted-foreground transition-colors hover:text-foreground"
         >
           <ChevronLeftIcon className="mr-1 h-4 w-4" />
           Back to setup
@@ -177,7 +174,6 @@ export function ExamRunner({ exam, onSubmit, onBack, submitting, error }: ExamRu
                 question={current}
                 value={answers[current.id] ?? null}
                 onChange={(v) => setAnswer(current.id, v)}
-                disabled={submitting}
               />
             </CardContent>
           </Card>
@@ -186,18 +182,18 @@ export function ExamRunner({ exam, onSubmit, onBack, submitting, error }: ExamRu
             <Button
               variant="outline"
               onClick={goPrev}
-              disabled={currentIdx === 0 || submitting}
+              disabled={currentIdx === 0}
             >
               <ChevronLeftIcon className="mr-1 h-4 w-4" />
               Previous
             </Button>
             {currentIdx < totalQuestions - 1 ? (
-              <Button onClick={goNext} disabled={submitting}>
+              <Button onClick={goNext}>
                 Next
                 <ChevronRightIcon className="ml-1 h-4 w-4" />
               </Button>
             ) : (
-              <Button onClick={() => setShowSubmitConfirm(true)} disabled={submitting}>
+              <Button onClick={() => setShowSubmitConfirm(true)}>
                 <SendIcon className="mr-1.5 h-4 w-4" />
                 Submit Exam
               </Button>
@@ -227,7 +223,6 @@ export function ExamRunner({ exam, onSubmit, onBack, submitting, error }: ExamRu
                     <button
                       key={q.id}
                       onClick={() => setCurrentIdx(i)}
-                      disabled={submitting}
                       className={[
                         'relative flex h-9 w-9 items-center justify-center rounded-md border text-xs font-medium transition-all',
                         isCurrent
@@ -257,7 +252,6 @@ export function ExamRunner({ exam, onSubmit, onBack, submitting, error }: ExamRu
                 className="mt-4 w-full"
                 variant="default"
                 onClick={() => setShowSubmitConfirm(true)}
-                disabled={submitting}
               >
                 <SendIcon className="mr-1.5 h-4 w-4" />
                 Submit
@@ -294,16 +288,7 @@ export function ExamRunner({ exam, onSubmit, onBack, submitting, error }: ExamRu
                 <Button variant="outline" onClick={() => setShowSubmitConfirm(false)}>
                   Keep editing
                 </Button>
-                <Button onClick={handleSubmit} disabled={submitting}>
-                  {submitting ? (
-                    <>
-                      <LoaderIcon className="mr-1.5 h-4 w-4 animate-spin" />
-                      Evaluating...
-                    </>
-                  ) : (
-                    'Submit & Evaluate'
-                  )}
-                </Button>
+                <Button onClick={handleSubmit}>Submit & Evaluate</Button>
               </div>
             </CardContent>
           </Card>
@@ -317,21 +302,14 @@ function QuestionInput({
   question,
   value,
   onChange,
-  disabled,
 }: {
   question: ExamQuestion;
   value: string | null;
   onChange: (v: string | null) => void;
-  disabled: boolean;
 }) {
   if (question.type === 'mcq') {
     return (
-      <RadioGroup
-        value={value ?? ''}
-        onValueChange={(v) => onChange(v)}
-        disabled={disabled}
-        className="space-y-3"
-      >
+      <RadioGroup value={value ?? ''} onValueChange={(v) => onChange(v)} className="space-y-3">
         {question.options.map((opt, i) => {
           const letter = String.fromCharCode(65 + i);
           return (
@@ -342,7 +320,6 @@ function QuestionInput({
                 value === opt
                   ? 'border-primary bg-primary/5 ring-1 ring-primary/30'
                   : 'border-border hover:border-primary/40 hover:bg-secondary/50',
-                disabled ? 'cursor-not-allowed opacity-60' : '',
               ].join(' ')}
             >
               <RadioGroupItem value={opt} id={`${question.id}-${i}`} className="mt-0.5" />
@@ -361,7 +338,6 @@ function QuestionInput({
     <Textarea
       value={value ?? ''}
       onChange={(e) => onChange(e.target.value)}
-      disabled={disabled}
       placeholder="Write your answer here. Be thorough - the AI evaluates accuracy, completeness, reasoning, structure, and depth."
       className="min-h-[200px] resize-y text-sm leading-relaxed"
     />

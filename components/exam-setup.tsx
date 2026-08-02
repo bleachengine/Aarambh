@@ -32,6 +32,7 @@ interface ExamSetupProps {
   }) => Promise<void>;
   error: string | null;
   onViewHistory: () => void;
+  username: string | null;
 }
 
 const EXAMPLE_PROMPTS = [
@@ -69,7 +70,7 @@ const EXPANSION_LEVELS = [
   { value: 90, label: 'Exploratory', desc: 'Adds real-world scenarios and applied, higher-order questions.' },
 ];
 
-export function ExamSetup({ onGenerate, error, onViewHistory }: ExamSetupProps) {
+export function ExamSetup({ onGenerate, error, onViewHistory, username }: ExamSetupProps) {
   const [topic, setTopic] = useState('');
   const [mcqCount, setMcqCount] = useState(10);
   const [descriptiveCount, setDescriptiveCount] = useState(3);
@@ -97,9 +98,9 @@ export function ExamSetup({ onGenerate, error, onViewHistory }: ExamSetupProps) 
 
   return (
     <div className="mx-auto w-full max-w-7xl px-4 py-8 sm:px-6 sm:py-8 lg:px-8">
-      <AppHeader action={{ type: 'history', onClick: onViewHistory }} />
+      <AppHeader username={username} action={{ type: 'history', onClick: onViewHistory }} />
 
-      <p className="mb-2 text-sm text-muted-foreground sm:text-base">
+      <p className="mb-2 text-sm text-muted-foreground">
         Generate a complete, AI-authored exam on any subject - then get it graded with examiner-level feedback.
       </p>
 

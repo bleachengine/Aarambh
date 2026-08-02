@@ -15,6 +15,7 @@ interface ExamHistoryProps {
   onBack: () => void;
   onSelect: (item: ExamHistoryItem) => void;
   onResume: (item: ExamHistoryItem, exam: GeneratedExam) => void;
+  username: string | null;
 }
 
 function formatDate(iso: string): string {
@@ -34,7 +35,7 @@ function gradeColor(grade: string): string {
   return 'text-destructive';
 }
 
-export function ExamHistory({ onBack, onSelect, onResume }: ExamHistoryProps) {
+export function ExamHistory({ onBack, onSelect, onResume, username }: ExamHistoryProps) {
   const [items, setItems] = useState<ExamHistoryItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -102,7 +103,7 @@ export function ExamHistory({ onBack, onSelect, onResume }: ExamHistoryProps) {
 
   return (
     <div className="mx-auto w-full max-w-7xl px-4 py-8 sm:px-6 sm:py-10 lg:px-10">
-      <AppHeader />
+      <AppHeader username={username} />
 
       <div className="mx-auto max-w-4xl">
         <div className="mb-6 flex items-center gap-2">

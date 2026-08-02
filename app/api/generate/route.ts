@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest, NextResponse, after } from 'next/server';
 import { generateExam, isGeminiConfigured } from '@/lib/gemini';
 import { embedTexts } from '@/lib/embeddings';
 import { examConfigSchema } from '@/lib/validation';
@@ -114,13 +114,21 @@ export async function POST(req: NextRequest) {
       historyId = data?.id ?? null;
 
       if (embedCheck) {
+        // Doesn't feed the response - deferred so the client gets its exam
+        // immediately instead of waiting on this extra round trip.
         const rows = exam.questions.map((q, i) => ({
           exam_history_id: historyId,
           topic: config.topic,
           question: q.question,
           embedding: embedCheck!.embeddings[i],
         }));
-        await supabase.from('question_embeddings').insert(rows);
+        after(async () => {
+          try {
+            await supabase!.from('question_embeddings').insert(rows);
+          } catch {
+            // best-effort only
+          }
+        });
       }
     }
 

@@ -1,13 +1,44 @@
 import './globals.css';
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
 import { Inter } from 'next/font/google';
 
 const inter = Inter({ subsets: ['latin'], display: 'swap' });
 
+const SITE_URL = 'https://aarambh-xi.vercel.app';
+const TITLE = 'ExamForge - AI Exam Generator & Evaluator';
+const DESCRIPTION =
+  'Generate and evaluate AI-powered exams on any subject, topic, or skill. Enter a prompt, customize your test, and get instant, detailed feedback.';
+
 export const metadata: Metadata = {
-  title: 'ExamForge - AI Exam Generator & Evaluator',
-  description:
-    'Generate and evaluate AI-powered exams on any subject, topic, or skill. Enter a prompt, customize your test, and get instant, detailed feedback.',
+  metadataBase: new URL(SITE_URL),
+  title: TITLE,
+  description: DESCRIPTION,
+  alternates: {
+    canonical: '/',
+  },
+  robots: {
+    index: true,
+    follow: true,
+  },
+  openGraph: {
+    title: TITLE,
+    description: DESCRIPTION,
+    url: SITE_URL,
+    siteName: 'ExamForge',
+    type: 'website',
+    locale: 'en_US',
+  },
+  twitter: {
+    card: 'summary_large_image',
+    title: TITLE,
+    description: DESCRIPTION,
+  },
+};
+
+export const viewport: Viewport = {
+  themeColor: '#0EA2E7',
+  width: 'device-width',
+  initialScale: 1,
 };
 
 export default function RootLayout({

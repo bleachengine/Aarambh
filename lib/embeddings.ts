@@ -4,8 +4,6 @@ const API_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
 const EMBEDDING_MODEL = 'gemini-embedding-001';
 const EMBEDDING_DIMENSIONS = 768;
 
-export const isEmbeddingConfigured = (): boolean => Boolean(API_KEY);
-
 function getClient(): GoogleGenAI {
   if (!API_KEY) throw new Error('Gemini API key is not configured.');
   return new GoogleGenAI({ apiKey: API_KEY });

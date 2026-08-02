@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest, NextResponse, after } from 'next/server';
 import { evaluateExam, isGeminiConfigured } from '@/lib/gemini';
 import { generatedExamSchema, submittedAnswersSchema } from '@/lib/validation';
 import { supabase } from '@/lib/supabase';
@@ -59,15 +59,24 @@ export async function POST(req: NextRequest) {
     const result = await evaluateExam(examParse.data, answers);
 
     if (supabase && payload.historyId) {
-      await supabase
-        .from('exam_history')
-        .update({
-          answers,
-          evaluation: result,
-          status: 'evaluated',
-          evaluated_at: new Date().toISOString(),
-        })
-        .eq('id', payload.historyId);
+      // Doesn't feed the response - deferred so the client gets its graded
+      // result immediately instead of waiting on this write to finish.
+      const historyId = payload.historyId;
+      after(async () => {
+        try {
+          await supabase!
+            .from('exam_history')
+            .update({
+              answers,
+              evaluation: result,
+              status: 'evaluated',
+              evaluated_at: new Date().toISOString(),
+            })
+            .eq('id', historyId);
+        } catch {
+          // best-effort only
+        }
+      });
     }
 
     return NextResponse.json({ ok: true, result });

@@ -315,10 +315,11 @@ function normalizeExam(raw: unknown, config: { difficulty: string; topic: string
 function normalizeEvaluation(raw: unknown, exam: GeneratedExam, answers: Record<string, string | null>): unknown {
   const obj = (raw ?? {}) as Record<string, any>;
   const questionResults = Array.isArray(obj.questionResults) ? obj.questionResults : [];
+  const resultsById = new Map(questionResults.map((r: any) => [r.id, r]));
 
   // Reconcile against the original exam so IDs/counts always match.
   const reconciled = exam.questions.map((q, i) => {
-    const matched = questionResults.find((r: any) => r.id === q.id) ?? questionResults[i];
+    const matched = resultsById.get(q.id) ?? questionResults[i];
     const userAnswer = answers[q.id] ?? null;
     if (q.type === 'mcq') {
       // MCQ correctness is a deterministic string comparison we can compute

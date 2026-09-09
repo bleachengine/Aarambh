@@ -6,9 +6,10 @@ import { ExamRunner } from '@/components/exam-runner';
 import { ExamResults } from '@/components/exam-results';
 import { ExamHistory } from '@/components/exam-history';
 import { LoadingScreen } from '@/components/loading-screen';
+import { PyqSection } from '@/components/pyq-section';
 import type { Difficulty, GeneratedExam, EvaluationResult, ExamHistoryItem } from '@/lib/types';
 
-type Phase = 'setup' | 'exam' | 'results' | 'history';
+type Phase = 'setup' | 'exam' | 'results' | 'history' | 'pyq';
 
 interface GenerateConfig {
   topic: string;
@@ -30,6 +31,9 @@ export default function Home() {
   // (either resumed or viewed) - governs whether "back" returns to History
   // instead of the fresh setup screen.
   const [cameFromHistory, setCameFromHistory] = useState(false);
+  // Same idea, for attempts started from the Previous Year Papers section
+  // (separate feature, additive) - governs whether "back" returns there.
+  const [cameFromPyq, setCameFromPyq] = useState(false);
 
   const handleGenerate = useCallback(async (config: GenerateConfig) => {
     setLoading(true);
@@ -48,6 +52,7 @@ export default function Home() {
       setResult(null);
       setHistoryId(data.historyId ?? null);
       setCameFromHistory(false);
+      setCameFromPyq(false);
       setPhase('exam');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to generate exam. Please try again.');
@@ -88,6 +93,7 @@ export default function Home() {
     setResult(null);
     setHistoryId(null);
     setCameFromHistory(false);
+    setCameFromPyq(false);
     setError(null);
   }, []);
 
@@ -97,6 +103,7 @@ export default function Home() {
     setResult(null);
     setHistoryId(null);
     setCameFromHistory(false);
+    setCameFromPyq(false);
     setError(null);
   }, []);
 
@@ -110,6 +117,7 @@ export default function Home() {
     setResult(null);
     setHistoryId(null);
     setCameFromHistory(false);
+    setCameFromPyq(false);
     setError(null);
   }, []);
 
@@ -119,6 +127,7 @@ export default function Home() {
       setExam(null);
       setHistoryId(item.id);
       setCameFromHistory(true);
+      setCameFromPyq(false);
       setPhase('results');
     }
   }, []);
@@ -128,12 +137,44 @@ export default function Home() {
     setResult(null);
     setHistoryId(item.id);
     setCameFromHistory(true);
+    setCameFromPyq(false);
     setError(null);
     setPhase('exam');
   }, []);
 
-  if (loading || submitting) {
+  // ---- Previous-Year Question Paper import (separate feature, additive) ----
+  const handleOpenPyq = useCallback(() => {
+    setPhase('pyq');
+  }, []);
+
+  const handleBackToPyq = useCallback(() => {
+    setPhase('pyq');
+    setExam(null);
+    setResult(null);
+    setHistoryId(null);
+    setCameFromHistory(false);
+    setCameFromPyq(false);
+    setError(null);
+  }, []);
+
+  const handleStartPyqAttempt = useCallback((newHistoryId: string, pyqExam: GeneratedExam) => {
+    setExam(pyqExam);
+    setResult(null);
+    setHistoryId(newHistoryId);
+    setCameFromHistory(false);
+    setCameFromPyq(true);
+    setError(null);
+    setPhase('exam');
+  }, []);
+
+  if (loading) {
     return <LoadingScreen />;
+  }
+
+  if (submitting) {
+    return (
+      <LoadingScreen message="Evaluating your answers... this can take a little longer for papers with many questions." />
+    );
   }
 
   if (phase === 'history') {
@@ -146,12 +187,16 @@ export default function Home() {
     );
   }
 
+  if (phase === 'pyq') {
+    return <PyqSection onBack={handleBackToSetup} onStartAttempt={handleStartPyqAttempt} />;
+  }
+
   if (phase === 'exam' && exam) {
     return (
       <ExamRunner
         exam={exam}
         onSubmit={handleSubmit}
-        onBack={cameFromHistory ? handleBackToHistory : handleBackToSetup}
+        onBack={cameFromPyq ? handleBackToPyq : cameFromHistory ? handleBackToHistory : handleBackToSetup}
         error={error}
       />
     );
@@ -163,7 +208,7 @@ export default function Home() {
         result={result}
         onRetake={handleRetake}
         onHome={handleBackToSetup}
-        onBackToHistory={cameFromHistory ? handleBackToHistory : undefined}
+        onBackToHistory={cameFromPyq ? handleBackToPyq : cameFromHistory ? handleBackToHistory : undefined}
       />
     );
   }
@@ -173,6 +218,7 @@ export default function Home() {
       onGenerate={handleGenerate}
       error={error}
       onViewHistory={handleViewHistory}
+      onOpenPyq={handleOpenPyq}
     />
   );
 }

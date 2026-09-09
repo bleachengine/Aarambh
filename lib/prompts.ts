@@ -124,3 +124,69 @@ OUTPUT JSON SHAPE
 
 The questionResults array must contain one entry per question in the original exam, in the same order. Return ONLY the JSON object. No markdown, no commentary.`;
 }
+
+// ---- PDF question-paper import (separate feature, additive only) ----
+
+export function buildPdfExtractionPrompt(): string {
+  return `You are extracting questions from a previous-year examination paper PDF.
+
+The PDF may be a normal digital document with selectable text, or it may be a scanned document where every page is effectively an image with no text layer at all - you are not told which in advance. Handle both correctly: if a text layer exists, use it for accuracy; if a page is scanned/image-based, read it visually like a human would. Every page must be read in full either way - never skip a page because it looks image-based.
+
+Extract EVERY actual question from the paper. The paper contains MCQ (multiple-choice) questions only.
+
+Ignore general exam instructions, headings, page numbers, decorative text, and other non-question content. Focus on the actual questions regardless of where they appear on a page - do not assume questions only appear in a particular position.
+
+Preserve the original question wording as accurately as possible. Do NOT change, rewrite, summarize, simplify, or modify the original questions.
+
+Do not solve the questions beyond determining the correct option (see ANSWER KEY rule below). Do not create new questions. Do not skip questions.
+
+For every question:
+- Preserve the original question number if printed.
+- Extract Hindi text when present (questionHindi).
+- Extract English text when present (questionEnglish). A question may have only one language present - that is fine, leave the other blank.
+- Extract every answer option in order, as an array of plain strings (without leading "A.", "1)", etc. labels).
+- Preserve mathematical expressions, symbols, units, and formulas exactly as written (plain text/unicode, no LaTeX).
+- Preserve tables when they are part of a question by describing them as clear structured text within the question.
+- Preserve information from diagrams when necessary to understand a question, by describing the relevant diagram content in the question text.
+- Preserve important formatting and context (e.g. "assertion/reason" pairs, passage-based question groups, or "which of the following" style lead-ins) as part of the question text.
+- If a question continues onto another page, combine it correctly into one entry.
+- Do not treat exam instructions, section headings, or page numbers as questions.
+- Do not guess missing text. If something is genuinely unreadable, mark that part as [UNCLEAR].
+
+ANSWER KEY
+- First, check the ENTIRE document (including the last pages) for an official answer key.
+- If an official answer key exists and covers a question, use it as ground truth for that question: set "correctAnswer" to the exact text of the option it points to, and write a brief "explanation" of why that option is correct.
+- If an answer key exists but only covers SOME questions (a partial key), use it for the questions it covers, and apply the rigorous self-reasoning process below only for the remaining questions it does not cover.
+- Set the top-level "hasAnswerKey" field to true if you found and used an official answer key for at least one question (including a partial key), and false only if the document contains no answer key at all and every "correctAnswer" was determined by your own reasoning.
+- For any question NOT covered by an official answer key, you must determine the correct option yourself - but do this rigorously, not as a quick guess:
+  1. Read the question carefully and restate to yourself what it is actually asking.
+  2. Evaluate each of the 4 options individually against your own verified subject-matter knowledge - for each option, judge specifically whether it is correct or incorrect and why.
+  3. Eliminate options you are confident are wrong before settling on the one you are confident is right.
+  4. Only select an option you have high confidence in from verified knowledge. Do not pick an option merely because it "sounds right" or is the most detailed-sounding choice.
+  5. Write the "explanation" as the specific fact or reasoning that makes your chosen option correct (not a vague restatement of the question).
+  This applies per-question - some questions in a paper without a general answer key may still be ones you are less certain about; still give your single best, most rigorously-reasoned answer for every question. Never leave "correctAnswer" blank.
+- "correctAnswer" must always be the exact text of one of the options, verbatim.
+
+PAPER METADATA
+- Determine "title", "examName" (e.g. the name of the exam this paper is from), and "year" from the paper itself where visible (e.g. a cover page, header, or footer). Leave a field blank rather than guessing if it is not clearly stated.
+
+Return ONLY valid JSON, using exactly this shape:
+{
+  "title": string,
+  "examName": string,
+  "year": string,
+  "hasAnswerKey": boolean,
+  "questions": [
+    {
+      "number": number,
+      "questionHindi": string,
+      "questionEnglish": string,
+      "options": [string, ...],
+      "correctAnswer": string,
+      "explanation": string
+    }
+  ]
+}
+
+Make sure every MCQ in the paper is included exactly once, in order. There is no limit on the number of questions - extract all of them, whether there are 10 or 200. Return ONLY the JSON object. No markdown, no commentary.`;
+}

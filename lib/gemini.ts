@@ -1,12 +1,15 @@
-import { GoogleGenAI, Type } from '@google/genai';
-import type { GeneratedExam, EvaluationResult } from './types';
+import { GoogleGenAI, Type, FileState, createPartFromUri, createUserContent } from '@google/genai';
+import type { GeneratedExam, EvaluationResult, MCQQuestion } from './types';
 import {
   generatedExamSchema,
   evaluationResultSchema,
+  mcqQuestionSchema,
+  pdfExtractionResultSchema,
 } from './validation';
 import {
   buildGeneratePrompt,
   buildEvaluatePrompt,
+  buildPdfExtractionPrompt,
 } from './prompts';
 
 const API_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
@@ -388,4 +391,217 @@ function gradeFor(pct: number): string {
   if (pct >= 60) return 'C';
   if (pct >= 50) return 'D';
   return 'F';
+}
+
+// ---- PDF question-paper import (separate feature, additive only) ----
+// Everything below is new and does not alter any of the generation/
+// evaluation logic above. It reuses getClient(), MODEL, parseJsonLoose() and
+// genId() from this same file. No retry loop here (unlike generateExam/
+// evaluateExam) - a single request per PDF as required, and quota errors are
+// classified and surfaced by the API route instead of being retried.
+
+export interface PdfExtractionResult {
+  exam: GeneratedExam;
+  examName: string | null;
+  year: string | null;
+  /** True only if Gemini found and used an official answer key in the
+   * source document; false means every correctAnswer was determined by
+   * Gemini's own reasoning and should be treated with proportionally less
+   * confidence than a source-verified answer. */
+  hasAnswerKey: boolean;
+  warnings: string[];
+}
+
+function buildPdfExtractionResponseSchema() {
+  return {
+    type: Type.OBJECT,
+    properties: {
+      title: { type: Type.STRING },
+      examName: { type: Type.STRING },
+      year: { type: Type.STRING },
+      hasAnswerKey: { type: Type.BOOLEAN },
+      questions: {
+        type: Type.ARRAY,
+        // NOTE: deliberately no minItems/maxItems - see the same note on
+        // buildExamResponseSchema/buildEvaluationResponseSchema above.
+        // Gemini's structured-output compiler rejects large arrays outright
+        // once the constraint + item schema gets big enough, and PDF papers
+        // here can have 150+ questions.
+        items: {
+          type: Type.OBJECT,
+          properties: {
+            number: { type: Type.NUMBER },
+            questionHindi: { type: Type.STRING },
+            questionEnglish: { type: Type.STRING },
+            options: { type: Type.ARRAY, items: { type: Type.STRING } },
+            correctAnswer: { type: Type.STRING },
+            explanation: { type: Type.STRING },
+          },
+          required: ['options', 'correctAnswer', 'explanation'],
+        },
+      },
+    },
+    required: ['questions', 'hasAnswerKey'],
+  };
+}
+
+function normalizePdfExtraction(loose: ReturnType<typeof pdfExtractionResultSchema.parse>): PdfExtractionResult {
+  const warnings: string[] = [];
+  const rawQuestions = loose.questions ?? [];
+
+  const mcqs: MCQQuestion[] = [];
+  for (let i = 0; i < rawQuestions.length; i++) {
+    const q = rawQuestions[i];
+    const label = q.number != null ? `Question ${q.number}` : `Question at position ${i + 1}`;
+
+    const hindi = (q.questionHindi ?? '').trim();
+    const english = (q.questionEnglish ?? '').trim();
+    const questionText = [english, hindi].filter(Boolean).join(' | ');
+    if (!questionText) {
+      warnings.push(`${label} skipped: no question text could be extracted.`);
+      continue;
+    }
+
+    const options = (q.options ?? []).map((o) => o.trim()).filter(Boolean);
+    if (options.length !== 4) {
+      warnings.push(`${label} skipped: expected exactly 4 options, found ${options.length}.`);
+      continue;
+    }
+
+    const correctAnswer = (q.correctAnswer ?? '').trim();
+    if (!correctAnswer || !options.includes(correctAnswer)) {
+      warnings.push(`${label} skipped: extracted answer did not match any option verbatim.`);
+      continue;
+    }
+
+    const candidate = {
+      id: genId('pyq', mcqs.length),
+      type: 'mcq' as const,
+      question: questionText,
+      options,
+      correctAnswer,
+      explanation: (q.explanation ?? '').trim() || 'No explanation was available for this question.',
+      marks: 1,
+      // Rounded defensively so a stray floating-point artifact from the AI
+      // can never fail mcqQuestionSchema's `.int()` check and needlessly
+      // discard an otherwise-valid question over a purely informational field.
+      ...(typeof q.number === 'number' && Number.isFinite(q.number) ? { number: Math.round(q.number) } : {}),
+    };
+
+    const check = mcqQuestionSchema.safeParse(candidate);
+    if (!check.success) {
+      warnings.push(`${label} skipped: ${check.error.issues[0]?.message ?? 'failed validation'}.`);
+      continue;
+    }
+    mcqs.push(check.data as MCQQuestion);
+  }
+
+  if (mcqs.length === 0) {
+    throw new Error('No valid MCQ questions could be extracted from this PDF.');
+  }
+
+  const totalMarks = mcqs.reduce((sum, q) => sum + q.marks, 0);
+  const title = loose.title?.trim() || 'Imported Question Paper';
+  const exam = {
+    metadata: {
+      title,
+      description: 'Imported from a previous-year question paper PDF.',
+      totalMarks,
+      estimatedDurationMinutes: Math.max(10, mcqs.length),
+      difficulty: 'Medium' as const,
+      topic: loose.examName?.trim() || title,
+    },
+    questions: mcqs,
+  };
+
+  const validated = generatedExamSchema.parse(exam);
+  return {
+    exam: validated as GeneratedExam,
+    examName: loose.examName?.trim() || null,
+    year: loose.year?.trim() || null,
+    hasAnswerKey: loose.hasAnswerKey ?? false,
+    warnings,
+  };
+}
+
+// Split into 3 independent, individually-short steps (upload / poll status /
+// extract) instead of one long blocking call. This exists specifically so no
+// single HTTP request needs to run anywhere close to a serverless platform's
+// duration ceiling (e.g. Vercel Hobby's hard 60s cap) - the client polls
+// status across several fast requests instead of the server blocking on one
+// long one. Reliability note: the underlying @google/genai client already
+// retries transient failures (network errors, 408/429/500/502/503/504) with
+// exponential backoff by default (5 attempts) - no need to duplicate that.
+
+export interface UploadedPdfFile {
+  fileName: string;
+}
+
+/** Step 1: upload the PDF to Gemini's Files API. Typically fast (seconds),
+ * bounded mainly by the file's own size/bandwidth, not by AI processing. */
+export async function uploadPdfToGemini(pdfBuffer: Buffer, filename: string): Promise<UploadedPdfFile> {
+  const client = getClient();
+  const blob = new Blob([new Uint8Array(pdfBuffer)], { type: 'application/pdf' });
+  const uploaded = await client.files.upload({
+    file: blob,
+    config: { mimeType: 'application/pdf', displayName: filename },
+  });
+  if (!uploaded.name) throw new Error('Gemini did not return a file reference for the upload.');
+  return { fileName: uploaded.name };
+}
+
+export type PdfFileState = 'PROCESSING' | 'ACTIVE' | 'FAILED' | 'UNKNOWN';
+
+/** Step 2: a single, near-instant status check (no internal waiting/polling
+ * loop) - the caller (the API route, driven by the client) is responsible
+ * for calling this repeatedly until it returns ACTIVE or FAILED. */
+export async function checkPdfFileStatus(fileName: string): Promise<PdfFileState> {
+  const client = getClient();
+  const file = await client.files.get({ name: fileName });
+  if (file.state === FileState.ACTIVE) return 'ACTIVE';
+  if (file.state === FileState.FAILED) return 'FAILED';
+  if (file.state === FileState.PROCESSING) return 'PROCESSING';
+  return 'UNKNOWN';
+}
+
+/** Step 3: once the file is ACTIVE, run the actual extraction. This is the
+ * one step that cannot be split further (a single generateContent call), but
+ * measured timings (10-25s for 20-80 questions) comfortably fit even a 60s
+ * ceiling for realistic paper sizes since it's no longer sharing that budget
+ * with upload/processing-wait time. Deletes the uploaded file afterward
+ * either way (best-effort - Gemini also auto-expires files after 48h). */
+export async function extractQuestionsFromUploadedPdf(fileName: string): Promise<PdfExtractionResult> {
+  const client = getClient();
+  try {
+    const file = await client.files.get({ name: fileName });
+    if (file.state !== FileState.ACTIVE) {
+      throw new Error(`PDF is not ready for extraction yet (state: ${file.state ?? 'unknown'}).`);
+    }
+    if (!file.uri || !file.mimeType) {
+      throw new Error('Gemini did not return a usable reference for the uploaded PDF.');
+    }
+
+    const prompt = buildPdfExtractionPrompt();
+    const filePart = createPartFromUri(file.uri, file.mimeType);
+    const contents = createUserContent([prompt, filePart]);
+
+    const response = await client.models.generateContent({
+      model: MODEL,
+      contents,
+      config: {
+        responseMimeType: 'application/json',
+        responseSchema: buildPdfExtractionResponseSchema(),
+        temperature: 0.1, // faithful extraction, not creative generation
+      },
+    });
+
+    const text = response.text ?? '';
+    if (!text) throw new Error('Empty response from AI while reading the PDF.');
+
+    const parsed = parseJsonLoose<unknown>(text);
+    const loose = pdfExtractionResultSchema.parse(parsed);
+    return normalizePdfExtraction(loose);
+  } finally {
+    client.files.delete({ name: fileName }).catch(() => {});
+  }
 }

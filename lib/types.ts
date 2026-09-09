@@ -8,6 +8,9 @@ export interface MCQQuestion {
   correctAnswer: string;
   explanation: string;
   marks: number;
+  /** Optional - the question's original printed number, when known (e.g.
+   * from an imported PDF paper). Undefined for AI-generated exams. */
+  number?: number;
 }
 
 export interface DescriptiveQuestion {
@@ -90,4 +93,25 @@ export interface ExamHistoryItem {
 export interface ApiError {
   error: string;
   details?: string;
+}
+
+// ---- Previous-Year Question Paper import (separate feature, additive only) ----
+
+/** A reusable paper template extracted from an uploaded PDF. `exam` is the
+ * exact same GeneratedExam shape used everywhere else, so it can be started
+ * as an attempt (a fresh exam_history row) with zero changes to the existing
+ * exam runner/evaluation pipeline. */
+export interface PYQPaper {
+  id: string;
+  title: string;
+  exam_name: string | null;
+  year: string | null;
+  description: string | null;
+  question_count: number;
+  source_filename: string | null;
+  /** True if an official answer key was found in the source PDF and used;
+   * false means every correctAnswer was determined by Gemini itself. */
+  has_answer_key: boolean;
+  exam: GeneratedExam;
+  created_at: string;
 }

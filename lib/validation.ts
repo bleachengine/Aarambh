@@ -10,6 +10,10 @@ export const mcqQuestionSchema = z.object({
   correctAnswer: z.string().min(1),
   explanation: z.string().min(1),
   marks: z.number().int().positive(),
+  // Optional - only ever set for imported PDF papers (see lib/gemini.ts
+  // normalizePdfExtraction). AI-generated exams simply omit it, which zod
+  // treats as valid, so this is fully backward-compatible.
+  number: z.number().int().optional(),
 });
 
 export const descriptiveQuestionSchema = z.object({
@@ -90,3 +94,26 @@ export const examConfigSchema = z.object({
 });
 
 export const submittedAnswersSchema = z.record(z.string(), z.string().nullable());
+
+// ---- PDF question-paper import (separate feature, additive only) ----
+// Deliberately loose: this validates Gemini's raw PDF-extraction output
+// before it gets normalized and re-validated against the existing, strict
+// `generatedExamSchema` above - mirrors how normalizeExam() already handles
+// the raw generation response defensively before final validation.
+
+export const pdfExtractedQuestionSchema = z.object({
+  number: z.number().optional(),
+  questionHindi: z.string().optional(),
+  questionEnglish: z.string().optional(),
+  options: z.array(z.string()).optional(),
+  correctAnswer: z.string().optional(),
+  explanation: z.string().optional(),
+});
+
+export const pdfExtractionResultSchema = z.object({
+  title: z.string().optional(),
+  examName: z.string().optional(),
+  year: z.string().optional(),
+  hasAnswerKey: z.boolean().optional(),
+  questions: z.array(pdfExtractedQuestionSchema).optional(),
+});

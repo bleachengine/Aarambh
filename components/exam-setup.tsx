@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useCallback } from 'react';
-import { SparklesIcon } from '@/components/icons';
+import { SparklesIcon, FileTextIcon, ChevronRightIcon } from '@/components/icons';
 import { AppHeader } from '@/components/app-header';
 import { Button } from '@/components/ui/button';
 import {
@@ -32,6 +32,10 @@ interface ExamSetupProps {
   }) => Promise<void>;
   error: string | null;
   onViewHistory: () => void;
+  /** Optional - opens the separate "Previous Year Papers" (PDF import)
+   * section. Purely additive: existing callers that omit this prop are
+   * unaffected, the entry point simply doesn't render. */
+  onOpenPyq?: () => void;
 }
 
 const EXAMPLE_PROMPTS = [
@@ -69,7 +73,7 @@ const EXPANSION_LEVELS = [
   { value: 90, label: 'Exploratory', desc: 'Adds real-world scenarios and applied, higher-order questions.' },
 ];
 
-export function ExamSetup({ onGenerate, error, onViewHistory }: ExamSetupProps) {
+export function ExamSetup({ onGenerate, error, onViewHistory, onOpenPyq }: ExamSetupProps) {
   const [topic, setTopic] = useState('');
   const [mcqCount, setMcqCount] = useState(10);
   const [descriptiveCount, setDescriptiveCount] = useState(3);
@@ -250,6 +254,28 @@ export function ExamSetup({ onGenerate, error, onViewHistory }: ExamSetupProps) 
           </form>
         </CardContent>
       </Card>
+
+      {onOpenPyq && (
+        <Card className="mt-6 animate-slide-up shadow-sm">
+          <CardContent className="flex items-center justify-between gap-4 py-4">
+            <div className="flex items-center gap-3">
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary/10">
+                <FileTextIcon className="h-5 w-5 text-primary" />
+              </span>
+              <div>
+                <div className="text-sm font-semibold">Previous Year Papers</div>
+                <p className="text-xs text-muted-foreground">
+                  Import a scanned PDF question paper and take it like any other test.
+                </p>
+              </div>
+            </div>
+            <Button variant="outline" size="sm" onClick={onOpenPyq}>
+              Open
+              <ChevronRightIcon className="ml-1 h-4 w-4" />
+            </Button>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }

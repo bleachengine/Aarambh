@@ -18,6 +18,8 @@ export const maxDuration = 60;
 interface ExtractPayload {
   fileName?: string;
   originalFilename?: string;
+  fileUri?: string;
+  fileMimeType?: string;
 }
 
 export async function POST(req: NextRequest) {
@@ -50,7 +52,7 @@ export async function POST(req: NextRequest) {
 
     let extraction;
     try {
-      extraction = await extractQuestionsFromUploadedPdf(payload.fileName);
+      extraction = await extractQuestionsFromUploadedPdf(payload.fileName, payload.fileUri, payload.fileMimeType);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const isQuota = message.includes('RESOURCE_EXHAUSTED') || message.includes('"code":429');

@@ -36,8 +36,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(body, { status: 400 });
     }
 
-    const state = await checkPdfFileStatus(payload.fileName);
-    return NextResponse.json({ ok: true, state });
+    const result = await checkPdfFileStatus(payload.fileName);
+    return NextResponse.json({ ok: true, ...result });
   } catch (err) {
     const body: ApiError = {
       error: 'Failed to check the PDF processing status.',

@@ -15,7 +15,13 @@ import { AppHeader } from '@/components/app-header';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { fetchPyqPapers, deletePyqPaper, startPyqAttempt } from '@/lib/pyq';
+import {
+  fetchPyqPapers,
+  fetchPyqPaperExam,
+  deletePyqPaper,
+  startPyqAttempt,
+  uploadPdfDirectToStorage,
+} from '@/lib/pyq';
 import { isSupabaseConfigured } from '@/lib/supabase';
 import type { PYQPaper, GeneratedExam } from '@/lib/types';
 
@@ -41,6 +47,27 @@ const IMPORT_STAGES = [
 
 const POLL_INTERVAL_MS = 3000;
 const MAX_POLL_MS = 8 * 60 * 1000; // 8 minutes - generous, since each poll is its own fast request
+
+/** Safely parses a fetch Response as JSON. Vercel (and other infra in front
+ * of the app) can reject a request before it ever reaches our route code -
+ * e.g. a request-body-too-large rejection comes back as plain text, not
+ * JSON. Calling res.json() directly on that throws a cryptic "Unexpected
+ * token... is not valid JSON" instead of a real error message. This always
+ * resolves to a usable object instead. */
+async function safeParseJson(res: Response): Promise<{ ok?: boolean; error?: string; details?: string; [key: string]: unknown }> {
+  const text = await res.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    if (res.status === 413) {
+      return { error: 'This PDF is too large for the server to accept. Try a smaller file or a lower-resolution scan.' };
+    }
+    return {
+      error: `Unexpected server response (HTTP ${res.status}).`,
+      details: text.slice(0, 200) || res.statusText,
+    };
+  }
+}
 
 /** Full-screen import progress. Visually matches LoadingScreen's loader.gif
  * treatment (same background color, same asset) but is implemented locally
@@ -97,25 +124,39 @@ export function PyqSection({ onBack, onStartAttempt }: PyqSectionProps) {
       setImportError('Please choose a PDF file first.');
       return;
     }
+    // Same 20MB ceiling enforced server-side in app/api/import-pdf/upload -
+    // checked here too so an oversized file is rejected instantly.
+    if (file.size > 20 * 1024 * 1024) {
+      setImportError('This PDF is too large (max 20MB). Try a smaller file or a lower-resolution scan.');
+      return;
+    }
     setImportError(null);
     setImportWarnings([]);
     setImportStage(0);
     setImporting(true);
     try {
-      // Step 1: upload. Split into its own short request so no single call
-      // needs to run anywhere near a serverless platform's duration ceiling
-      // (e.g. Vercel Hobby's 60s cap) - see lib/gemini.ts for the full
-      // rationale. The browser waits as long as it takes either way; only
-      // individual requests are kept short.
-      const formData = new FormData();
-      formData.append('file', file);
-      const uploadRes = await fetch('/api/import-pdf/upload', { method: 'POST', body: formData });
-      const uploadData = await uploadRes.json();
-      if (!uploadRes.ok || !uploadData.ok) {
-        throw new Error(uploadData.error || uploadData.details || `Upload failed (${uploadRes.status})`);
+      // Step 1a: upload the file DIRECTLY to Supabase Storage from the
+      // browser - never touches a Vercel function, so Vercel's hard ~4.5MB
+      // request-body limit (confirmed hit in production) does not apply.
+      const uploadSlot = await uploadPdfDirectToStorage(file);
+      if (!uploadSlot) {
+        throw new Error('Failed to upload the PDF. Please try again.');
       }
-      const fileName: string = uploadData.fileName;
-      const originalFilename: string = uploadData.originalFilename ?? file.name;
+
+      // Step 1b: tell the server where to find it. This request body is
+      // just a short path string, never anywhere near Vercel's body limit,
+      // regardless of how large the actual PDF is.
+      const uploadRes = await fetch('/api/import-pdf/upload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ storagePath: uploadSlot.storagePath, originalFilename: file.name }),
+      });
+      const uploadData = await safeParseJson(uploadRes);
+      if (!uploadRes.ok || !uploadData.ok) {
+        throw new Error((uploadData.error as string) || (uploadData.details as string) || `Upload failed (${uploadRes.status})`);
+      }
+      const fileName = uploadData.fileName as string;
+      const originalFilename = (uploadData.originalFilename as string) ?? file.name;
 
       // Step 2: poll status every few seconds until Gemini finishes
       // processing the file. Each poll is its own fast, independent request.
@@ -128,6 +169,10 @@ export function PyqSection({ onBack, onStartAttempt }: PyqSectionProps) {
       const pollStart = Date.now();
       let consecutiveFailures = 0;
       const MAX_CONSECUTIVE_FAILURES = 5;
+      // Captured once ACTIVE so the extract step can skip an entirely
+      // avoidable second Gemini lookup for information this poll already has.
+      let fileUri: string | undefined;
+      let fileMimeType: string | undefined;
       for (;;) {
         let terminalError: Error | null = null;
         try {
@@ -136,12 +181,16 @@ export function PyqSection({ onBack, onStartAttempt }: PyqSectionProps) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ fileName }),
           });
-          const statusData = await statusRes.json();
+          const statusData = await safeParseJson(statusRes);
           if (!statusRes.ok || !statusData.ok) {
-            throw new Error(statusData.error || statusData.details || `Status check failed (${statusRes.status})`);
+            throw new Error((statusData.error as string) || (statusData.details as string) || `Status check failed (${statusRes.status})`);
           }
           consecutiveFailures = 0;
-          if (statusData.state === 'ACTIVE') break;
+          if (statusData.state === 'ACTIVE') {
+            fileUri = statusData.uri as string | undefined;
+            fileMimeType = statusData.mimeType as string | undefined;
+            break;
+          }
           if (statusData.state === 'FAILED') {
             terminalError = new Error('Gemini failed to process the uploaded PDF (it may be corrupted or unreadable).');
           }
@@ -168,14 +217,14 @@ export function PyqSection({ onBack, onStartAttempt }: PyqSectionProps) {
       const extractRes = await fetch('/api/import-pdf/extract', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fileName, originalFilename }),
+        body: JSON.stringify({ fileName, originalFilename, fileUri, fileMimeType }),
       });
-      const extractData = await extractRes.json();
+      const extractData = await safeParseJson(extractRes);
       if (!extractRes.ok || !extractData.ok) {
-        throw new Error(extractData.error || extractData.details || `Extraction failed (${extractRes.status})`);
+        throw new Error((extractData.error as string) || (extractData.details as string) || `Extraction failed (${extractRes.status})`);
       }
 
-      setImportWarnings(Array.isArray(extractData.warnings) ? extractData.warnings : []);
+      setImportWarnings(Array.isArray(extractData.warnings) ? (extractData.warnings as string[]) : []);
       setPapers((prev) => [extractData.paper as PYQPaper, ...prev]);
       setView('list');
       setSelectedFileName(null);
@@ -191,7 +240,16 @@ export function PyqSection({ onBack, onStartAttempt }: PyqSectionProps) {
     async (paper: PYQPaper) => {
       setStartError(null);
       setStartingId(paper.id);
-      const result = await startPyqAttempt(paper);
+      // The list doesn't carry the full exam (see fetchPyqPapers) - a paper
+      // just imported this session already has it cached in state, so only
+      // fetch it on-demand when it isn't already there.
+      const exam = paper.exam ?? (await fetchPyqPaperExam(paper.id)) ?? undefined;
+      if (!exam) {
+        setStartingId(null);
+        setStartError('Failed to load this paper. Please try again.');
+        return;
+      }
+      const result = await startPyqAttempt(paper, exam);
       setStartingId(null);
       if (result) {
         onStartAttempt(result.historyId, result.exam);
@@ -267,7 +325,7 @@ export function PyqSection({ onBack, onStartAttempt }: PyqSectionProps) {
                     <span className="font-medium text-primary">Click to choose a PDF</span>
                   </p>
                 )}
-                <p className="text-xs text-muted-foreground">PDF only, up to 25MB.</p>
+                <p className="text-xs text-muted-foreground">PDF only, up to 20MB.</p>
               </button>
               <input
                 ref={fileInputRef}
@@ -353,11 +411,11 @@ export function PyqSection({ onBack, onStartAttempt }: PyqSectionProps) {
                           {paper.exam_name && <Badge variant="outline">{paper.exam_name}</Badge>}
                           {paper.year && <Badge variant="outline">{paper.year}</Badge>}
                           {paper.has_answer_key ? (
-                            <Badge variant="secondary" className="text-success">
+                            <Badge variant="outline" className="border-success/50 bg-success/15 text-foreground">
                               Answers verified from source
                             </Badge>
                           ) : (
-                            <Badge variant="secondary" className="text-success">
+                            <Badge variant="outline" className="border-warning/70 bg-warning/25 text-foreground">
                               AI-determined answers
                             </Badge>
                           )}

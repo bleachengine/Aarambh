@@ -100,18 +100,26 @@ export interface ApiError {
 /** A reusable paper template extracted from an uploaded PDF. `exam` is the
  * exact same GeneratedExam shape used everywhere else, so it can be started
  * as an attempt (a fresh exam_history row) with zero changes to the existing
- * exam runner/evaluation pipeline. */
+ * exam runner/evaluation pipeline.
+ *
+ * `exam` and `description` are optional because the papers LIST doesn't fetch
+ * them (mirrors lib/history.ts's fetchExamHistory/fetchExamById split) -
+ * pulling every question's full text for every imported paper just to render
+ * a title and a count would be pure waste. They're only populated when a
+ * paper was just imported (the extract response already has them, no reason
+ * to discard them) or fetched on-demand via fetchPyqPaperExam() right before
+ * starting an attempt. */
 export interface PYQPaper {
   id: string;
   title: string;
   exam_name: string | null;
   year: string | null;
-  description: string | null;
+  description?: string | null;
   question_count: number;
   source_filename: string | null;
   /** True if an official answer key was found in the source PDF and used;
    * false means every correctAnswer was determined by Gemini itself. */
   has_answer_key: boolean;
-  exam: GeneratedExam;
+  exam?: GeneratedExam;
   created_at: string;
 }

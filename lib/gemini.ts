@@ -552,16 +552,27 @@ export async function uploadPdfToGemini(pdfBuffer: Buffer, filename: string): Pr
 
 export type PdfFileState = 'PROCESSING' | 'ACTIVE' | 'FAILED' | 'UNKNOWN';
 
+export interface PdfFileStatusResult {
+  state: PdfFileState;
+  /** Only set when state is ACTIVE. Passed through by the API route so the
+   * client can hand them straight to the extract step, skipping a second,
+   * redundant Gemini lookup for information this call already fetched. */
+  uri?: string;
+  mimeType?: string;
+}
+
 /** Step 2: a single, near-instant status check (no internal waiting/polling
  * loop) - the caller (the API route, driven by the client) is responsible
  * for calling this repeatedly until it returns ACTIVE or FAILED. */
-export async function checkPdfFileStatus(fileName: string): Promise<PdfFileState> {
+export async function checkPdfFileStatus(fileName: string): Promise<PdfFileStatusResult> {
   const client = getClient();
   const file = await client.files.get({ name: fileName });
-  if (file.state === FileState.ACTIVE) return 'ACTIVE';
-  if (file.state === FileState.FAILED) return 'FAILED';
-  if (file.state === FileState.PROCESSING) return 'PROCESSING';
-  return 'UNKNOWN';
+  if (file.state === FileState.ACTIVE) {
+    return { state: 'ACTIVE', uri: file.uri, mimeType: file.mimeType };
+  }
+  if (file.state === FileState.FAILED) return { state: 'FAILED' };
+  if (file.state === FileState.PROCESSING) return { state: 'PROCESSING' };
+  return { state: 'UNKNOWN' };
 }
 
 /** Step 3: once the file is ACTIVE, run the actual extraction. This is the
@@ -569,20 +580,36 @@ export async function checkPdfFileStatus(fileName: string): Promise<PdfFileState
  * measured timings (10-25s for 20-80 questions) comfortably fit even a 60s
  * ceiling for realistic paper sizes since it's no longer sharing that budget
  * with upload/processing-wait time. Deletes the uploaded file afterward
- * either way (best-effort - Gemini also auto-expires files after 48h). */
-export async function extractQuestionsFromUploadedPdf(fileName: string): Promise<PdfExtractionResult> {
+ * either way (best-effort - Gemini also auto-expires files after 48h).
+ *
+ * `fileUri`/`fileMimeType` are optional - when the caller already has them
+ * (from its own preceding status check), passing them in skips an entirely
+ * avoidable second files.get() round trip to Gemini in the hot path. When
+ * omitted, falls back to looking them up here so this function still works
+ * standalone. */
+export async function extractQuestionsFromUploadedPdf(
+  fileName: string,
+  fileUri?: string,
+  fileMimeType?: string,
+): Promise<PdfExtractionResult> {
   const client = getClient();
   try {
-    const file = await client.files.get({ name: fileName });
-    if (file.state !== FileState.ACTIVE) {
-      throw new Error(`PDF is not ready for extraction yet (state: ${file.state ?? 'unknown'}).`);
-    }
-    if (!file.uri || !file.mimeType) {
-      throw new Error('Gemini did not return a usable reference for the uploaded PDF.');
+    let uri = fileUri;
+    let mimeType = fileMimeType;
+    if (!uri || !mimeType) {
+      const file = await client.files.get({ name: fileName });
+      if (file.state !== FileState.ACTIVE) {
+        throw new Error(`PDF is not ready for extraction yet (state: ${file.state ?? 'unknown'}).`);
+      }
+      if (!file.uri || !file.mimeType) {
+        throw new Error('Gemini did not return a usable reference for the uploaded PDF.');
+      }
+      uri = file.uri;
+      mimeType = file.mimeType;
     }
 
     const prompt = buildPdfExtractionPrompt();
-    const filePart = createPartFromUri(file.uri, file.mimeType);
+    const filePart = createPartFromUri(uri, mimeType);
     const contents = createUserContent([prompt, filePart]);
 
     const response = await client.models.generateContent({

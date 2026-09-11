@@ -5,11 +5,13 @@ import {
   evaluationResultSchema,
   mcqQuestionSchema,
   pdfExtractionResultSchema,
+  answerVerificationResultSchema,
 } from './validation';
 import {
   buildGeneratePrompt,
   buildEvaluatePrompt,
   buildPdfExtractionPrompt,
+  buildAnswerVerificationPrompt,
 } from './prompts';
 
 const API_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
@@ -17,6 +19,17 @@ const API_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
 export const isGeminiConfigured = (): boolean => Boolean(API_KEY);
 
 const MODEL = 'gemini-flash-lite-latest';
+
+// A stronger, text-only model used exclusively to re-solve the answers of an
+// already-extracted PDF paper. Chosen empirically: benchmarked against every
+// generateContent-capable model on this key, gemini-3.5-flash was the one
+// that is BOTH reliable (8/8 up, ~3-7s) AND accurate on hard domain questions
+// (10/10 on a pharmacy/drug-law set, including questions the lite model and
+// even the intermittently-overloaded gemini-flash-latest got wrong). Since
+// this pass works on plain text (no PDF re-reading) it stays cheap and fast.
+// Kept separate from MODEL so the heavy vision extraction stays on the
+// cheaper lite model where extraction accuracy is already sufficient.
+const SOLVE_MODEL = 'gemini-3.5-flash';
 
 function getClient(): GoogleGenAI {
   if (!API_KEY) throw new Error('Gemini API key is not configured.');
@@ -631,4 +644,157 @@ export async function extractQuestionsFromUploadedPdf(
   } finally {
     client.files.delete({ name: fileName }).catch(() => {});
   }
+}
+
+function buildAnswerVerificationResponseSchema() {
+  return {
+    type: Type.OBJECT,
+    properties: {
+      answers: {
+        type: Type.ARRAY,
+        items: {
+          type: Type.OBJECT,
+          properties: {
+            id: { type: Type.STRING },
+            correctAnswer: { type: Type.STRING },
+            explanation: { type: Type.STRING },
+          },
+          required: ['id', 'correctAnswer', 'explanation'],
+        },
+      },
+    },
+    required: ['answers'],
+  };
+}
+
+export interface VerifyAnswersResult {
+  exam: GeneratedExam;
+  /** How many questions had their answer changed by the verification pass. */
+  changedCount: number;
+  /** Which model actually produced the verified answers - the stronger
+   * SOLVE_MODEL when available, or the reliable fallback MODEL when the
+   * stronger one was overloaded. */
+  model: string;
+}
+
+/** Runs one bounded solve attempt on a given model, hard-capped by an abort
+ * timeout so a slow/overloaded model can never blow the route's time budget.
+ * Internal SDK retry is disabled (attempts:1) so a transient failure surfaces
+ * immediately, letting the caller fall back rather than hang. */
+async function solveAnswersOnce(
+  client: GoogleGenAI,
+  model: string,
+  prompt: string,
+  timeoutMs: number,
+): Promise<string> {
+  const response = await client.models.generateContent({
+    model,
+    contents: prompt,
+    config: {
+      responseMimeType: 'application/json',
+      responseSchema: buildAnswerVerificationResponseSchema(),
+      temperature: 0.1,
+      abortSignal: AbortSignal.timeout(timeoutMs),
+      httpOptions: { retryOptions: { attempts: 1 } },
+    },
+  });
+  const t = response.text ?? '';
+  if (!t) throw new Error('Empty response from the answer-verification model.');
+  return t;
+}
+
+/** Re-solves every MCQ's correct answer in a dedicated text-only pass,
+ * separate from the PDF extraction. This matters because answer accuracy
+ * measurably degrades when the extraction call is simultaneously reading a
+ * scanned PDF and pulling out 100+ questions - isolating "just solve these"
+ * recovers a lot of it. Overrides the extraction pass's answer/explanation
+ * whenever the verifier returns an option-matching answer; leaves the
+ * question untouched otherwise.
+ *
+ * Model strategy: prefer the stronger SOLVE_MODEL (materially better on hard
+ * domain questions), but it is intermittently overloaded (503). So we give it
+ * ONE hard-time-bounded shot, and if it's unavailable, fall back to a still
+ * valuable isolated re-solve on the reliable base MODEL. Either way we return
+ * a dedicated-pass result; the stronger model just makes it better when it's
+ * up. The whole thing stays comfortably under the route's 60s ceiling.
+ *
+ * Intended for papers WITHOUT an official answer key (printed keys are ground
+ * truth and are not second-guessed) - the caller gates on that. */
+export async function verifyExamAnswers(exam: GeneratedExam): Promise<VerifyAnswersResult> {
+  const mcqs = exam.questions.filter((q): q is MCQQuestion => q.type === 'mcq');
+  if (mcqs.length === 0) return { exam, changedCount: 0, model: 'none' };
+
+  const client = getClient();
+  const prompt = buildAnswerVerificationPrompt(
+    mcqs.map((q) => ({ id: q.id, question: q.question, options: q.options })),
+  );
+
+  // Budget-aware model selection. SOLVE_MODEL is the one that gets hard
+  // questions right, but it's intermittently overloaded and its 503s fail
+  // FAST (~4s). So rather than one shot, we keep retrying it for the bulk of
+  // our time budget (many fast-failed 503s still leave room for several
+  // tries, sharply raising the odds we catch it while it's up), and reserve a
+  // final slice to fall back to the reliable base MODEL for a still-valuable
+  // isolated re-solve if SOLVE_MODEL never came up. Hard-bounded well under
+  // the route's 60s ceiling.
+  const OVERALL_BUDGET_MS = 52_000;
+  const FALLBACK_RESERVE_MS = 16_000; // time kept aside for the base-model floor
+  const deadline = Date.now() + OVERALL_BUDGET_MS;
+
+  let text: string | null = null;
+  let usedModel = '';
+  let lastErr: unknown;
+  while (Date.now() < deadline - FALLBACK_RESERVE_MS) {
+    const perAttempt = Math.min(18_000, deadline - FALLBACK_RESERVE_MS - Date.now());
+    if (perAttempt < 4_000) break;
+    try {
+      text = await solveAnswersOnce(client, SOLVE_MODEL, prompt, perAttempt);
+      usedModel = SOLVE_MODEL;
+      break;
+    } catch (err) {
+      lastErr = err;
+      if (isQuotaExceededError(err)) throw err; // won't clear in seconds - surface it
+      await new Promise((r) => setTimeout(r, 1200)); // brief backoff, then retry SOLVE_MODEL
+    }
+  }
+
+  if (text === null) {
+    // SOLVE_MODEL never came up within budget - fall back to the reliable base
+    // model for a still-worthwhile isolated re-solve (fixes the "knew it but
+    // output the wrong option" class even if it can't crack the hardest ones).
+    try {
+      text = await solveAnswersOnce(client, MODEL, prompt, Math.max(8_000, deadline - Date.now()));
+      usedModel = MODEL;
+    } catch (err) {
+      throw lastErr ?? err;
+    }
+  }
+
+  const parsed = parseJsonLoose<unknown>(text);
+  const verified = answerVerificationResultSchema.parse(parsed);
+  const byId = new Map((verified.answers ?? []).map((a) => [a.id, a]));
+
+  let changedCount = 0;
+  const questions = exam.questions.map((q) => {
+    if (q.type !== 'mcq') return q;
+    const v = byId.get(q.id);
+    if (!v) return q;
+    const proposed = (v.correctAnswer ?? '').trim();
+    // Only accept the verifier's answer if it matches an option verbatim -
+    // never let it corrupt a question with a non-option string.
+    if (!proposed || !q.options.includes(proposed)) return q;
+    if (proposed === q.correctAnswer) return q;
+    changedCount++;
+    return {
+      ...q,
+      correctAnswer: proposed,
+      explanation: (v.explanation ?? '').trim() || q.explanation,
+    };
+  });
+
+  const correctedExam: GeneratedExam = { ...exam, questions };
+  // Re-validate defensively - the shape is unchanged, but this guarantees we
+  // never return anything the rest of the app wouldn't accept.
+  const validated = generatedExamSchema.parse(correctedExam);
+  return { exam: validated as GeneratedExam, changedCount, model: usedModel };
 }

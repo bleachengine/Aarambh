@@ -36,13 +36,14 @@ interface PyqSectionProps {
   onStartAttempt: (historyId: string, exam: GeneratedExam) => void;
 }
 
-// These 3 stages map directly to the 3 real network requests below (upload /
-// poll status / extract) - each one only advances when its corresponding
-// request actually starts, not on a simulated timer.
+// These stages map directly to the real network requests below (upload /
+// poll status / extract / verify) - each one only advances when its
+// corresponding request actually starts, not on a simulated timer.
 const IMPORT_STAGES = [
   'Uploading question paper...',
   'Reading scanned pages...',
   'Extracting questions and saving paper...',
+  'Double-checking every answer for accuracy...',
 ];
 
 const POLL_INTERVAL_MS = 3000;
@@ -224,8 +225,36 @@ export function PyqSection({ onBack, onStartAttempt }: PyqSectionProps) {
         throw new Error((extractData.error as string) || (extractData.details as string) || `Extraction failed (${extractRes.status})`);
       }
 
-      setImportWarnings(Array.isArray(extractData.warnings) ? (extractData.warnings as string[]) : []);
-      setPapers((prev) => [extractData.paper as PYQPaper, ...prev]);
+      let paper = extractData.paper as PYQPaper;
+      const warnings = Array.isArray(extractData.warnings) ? (extractData.warnings as string[]) : [];
+
+      // Step 4 (only for papers WITHOUT an official answer key): re-solve every
+      // answer on a stronger, dedicated model. Extraction already saved the
+      // paper with best-effort answers, so this is a pure accuracy upgrade -
+      // if it fails for any reason the import still succeeds with those answers
+      // rather than erroring out. Printed answer keys are ground truth and are
+      // never second-guessed here.
+      if (paper && !paper.has_answer_key) {
+        setImportStage(3);
+        try {
+          const verifyRes = await fetch('/api/import-pdf/verify', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ paperId: paper.id }),
+          });
+          const verifyData = await safeParseJson(verifyRes);
+          if (verifyRes.ok && verifyData.ok && verifyData.paper) {
+            paper = verifyData.paper as PYQPaper;
+          }
+          // A verify failure is intentionally non-fatal: the paper is already
+          // saved and usable with its extraction-pass answers.
+        } catch {
+          /* non-fatal - keep the extraction-pass paper */
+        }
+      }
+
+      setImportWarnings(warnings);
+      setPapers((prev) => [paper, ...prev]);
       setView('list');
       setSelectedFileName(null);
       if (fileInputRef.current) fileInputRef.current.value = '';

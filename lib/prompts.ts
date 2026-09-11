@@ -190,3 +190,53 @@ Return ONLY valid JSON, using exactly this shape:
 
 Make sure every MCQ in the paper is included exactly once, in order. There is no limit on the number of questions - extract all of them, whether there are 10 or 200. Return ONLY the JSON object. No markdown, no commentary.`;
 }
+
+// ---- Answer verification pass (separate feature, additive only) ----
+// A dedicated, focused re-solve of already-extracted MCQs. Runs AFTER
+// extraction, on a stronger text-only model, precisely because answer
+// correctness measurably degrades when the same call is also busy reading a
+// scanned PDF and extracting 100+ questions at once. Isolating "just solve
+// these" recovers a lot of accuracy (verified: a question the extraction
+// pass got wrong despite writing a correct explanation comes out right here).
+
+export function buildAnswerVerificationPrompt(
+  questions: { id: string; question: string; options: string[] }[],
+): string {
+  const list = questions
+    .map(
+      (q) =>
+        `id: ${q.id}\nQuestion: ${q.question}\nOptions:\n${q.options
+          .map((o, i) => `  ${String.fromCharCode(65 + i)}. ${o}`)
+          .join('\n')}`,
+    )
+    .join('\n\n');
+
+  return `You are a meticulous subject-matter expert and examiner. Your ONLY job is to determine the single correct option for each multiple-choice question below, as accurately as humanly possible. These are real previous-year exam questions; a wrong answer directly harms a student, so accuracy matters more than anything else.
+
+Some questions may include both a Hindi and an English version of the same question separated by " | " - they mean the same thing; use whichever you understand best, they are not different questions.
+
+For EACH question, work through it rigorously and silently in this order before deciding:
+1. Understand precisely what the question asks.
+2. Consider each option one by one and judge whether it is correct or incorrect, using your verified, factual subject knowledge (laws, acts, section numbers, formulas, definitions, dates, standard references, etc.).
+3. Eliminate the options you are confident are wrong.
+4. Commit to the single option you are most confident is factually correct. Do not pick an option merely because it sounds plausible or is the most detailed - pick the one that is actually correct.
+5. Double-check: re-read the question and your chosen option together and confirm they truly match. If your reasoning points to a different option than your first instinct, trust the reasoning.
+
+Then output, for each question:
+- "id": the exact id given.
+- "correctAnswer": the EXACT, verbatim text of the correct option (copy it character-for-character from the options list; do NOT include the "A."/"B." label; it must match one of the provided options exactly).
+- "explanation": one or two clean, confident sentences stating the specific fact that makes that option correct. Do NOT write your deliberation, do NOT hedge, do NOT say things like "let me verify" or "wait" - only the final, settled justification. The explanation MUST support the option you put in "correctAnswer" - they can never contradict each other.
+
+Answer every question. Never leave "correctAnswer" blank. If you are genuinely unsure, still give your single best, most carefully reasoned answer.
+
+QUESTIONS:
+${list}
+
+Return ONLY valid JSON of the exact shape:
+{
+  "answers": [
+    { "id": string, "correctAnswer": string, "explanation": string }
+  ]
+}
+No markdown, no commentary.`;
+}

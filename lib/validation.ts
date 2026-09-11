@@ -117,3 +117,16 @@ export const pdfExtractionResultSchema = z.object({
   hasAnswerKey: z.boolean().optional(),
   questions: z.array(pdfExtractedQuestionSchema).optional(),
 });
+
+// Answer verification pass output (separate feature, additive only).
+export const answerVerificationResultSchema = z.object({
+  answers: z
+    .array(
+      z.object({
+        id: z.string(),
+        correctAnswer: z.string().optional(),
+        explanation: z.string().optional(),
+      }),
+    )
+    .optional(),
+});

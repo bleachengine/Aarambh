@@ -48,7 +48,29 @@ export default function Home() {
       if (!res.ok || !data.ok) {
         throw new Error(data.error || data.details || `Request failed (${res.status})`);
       }
-      setExam(data.exam);
+      let exam: GeneratedExam = data.exam;
+
+      // Re-solve every MCQ answer on a dedicated, stronger model before the
+      // user ever sees the exam - same accuracy pass used for imported PDF
+      // papers. Only worth calling when there's at least one MCQ to check;
+      // non-fatal, so any failure just falls back to the generation-pass exam.
+      if (exam.questions.some((q) => q.type === 'mcq')) {
+        try {
+          const verifyRes = await fetch('/api/verify-exam', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ exam, historyId: data.historyId ?? null }),
+          });
+          const verifyData = await verifyRes.json();
+          if (verifyRes.ok && verifyData.ok && verifyData.exam) {
+            exam = verifyData.exam;
+          }
+        } catch {
+          /* non-fatal - keep the generation-pass exam */
+        }
+      }
+
+      setExam(exam);
       setResult(null);
       setHistoryId(data.historyId ?? null);
       setCameFromHistory(false);

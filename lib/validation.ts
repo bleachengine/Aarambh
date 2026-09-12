@@ -46,6 +46,7 @@ export const generatedExamSchema = z.object({
 export const mcqEvaluationSchema = z.object({
   id: z.string(),
   type: z.literal('mcq'),
+  question: z.string().optional(),
   userAnswer: z.string().nullable(),
   correct: z.boolean(),
   correctAnswer: z.string().min(1),
@@ -57,6 +58,7 @@ export const mcqEvaluationSchema = z.object({
 export const descriptiveEvaluationSchema = z.object({
   id: z.string(),
   type: z.literal('descriptive'),
+  question: z.string().optional(),
   userAnswer: z.string(),
   idealAnswer: z.string().min(1),
   strengths: z.array(z.string()),

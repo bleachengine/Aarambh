@@ -42,6 +42,10 @@ export interface GeneratedExam {
 export interface MCQEvaluation {
   id: string;
   type: 'mcq';
+  /** The original question text, copied through so the results screen can
+   * show it. Optional for backward-compat with evaluations saved before this
+   * field existed. */
+  question?: string;
   userAnswer: string | null;
   correct: boolean;
   correctAnswer: string;
@@ -53,6 +57,7 @@ export interface MCQEvaluation {
 export interface DescriptiveEvaluation {
   id: string;
   type: 'descriptive';
+  question?: string;
   userAnswer: string;
   idealAnswer: string;
   strengths: string[];

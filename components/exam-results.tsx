@@ -202,12 +202,12 @@ function QuestionResult({ index, result }: { index: number; result: QuestionEval
       <CardHeader className="p-4">
         <button
           onClick={() => setExpanded((e) => !e)}
-          className="flex w-full items-center justify-between gap-3 text-left"
+          className="flex w-full items-start justify-between gap-3 text-left"
         >
-          <div className="flex items-center gap-3">
+          <div className="flex min-w-0 items-start gap-3">
             <span
               className={[
-                'flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-bold',
+                'mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-bold',
                 isCorrect
                   ? 'bg-success/15 text-success'
                   : isPartial
@@ -223,20 +223,25 @@ function QuestionResult({ index, result }: { index: number; result: QuestionEval
                 <XCircleIcon className="h-4 w-4" />
               )}
             </span>
-            <div>
-              <div className="flex items-center gap-2">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
                 <Badge variant="outline">Q{index + 1}</Badge>
                 <Badge variant="secondary">{result.type.toUpperCase()}</Badge>
                 <Badge variant="outline" className="tabular-nums">
                   {result.marksAwarded}/{result.marksMax}
                 </Badge>
               </div>
+              {result.question && (
+                <p className="mt-2 text-sm font-medium leading-relaxed text-foreground">
+                  {result.question}
+                </p>
+              )}
             </div>
           </div>
           {expanded ? (
-            <ChevronUpIcon className="h-5 w-5 shrink-0 text-muted-foreground" />
+            <ChevronUpIcon className="mt-0.5 h-5 w-5 shrink-0 text-muted-foreground" />
           ) : (
-            <ChevronDownIcon className="h-5 w-5 shrink-0 text-muted-foreground" />
+            <ChevronDownIcon className="mt-0.5 h-5 w-5 shrink-0 text-muted-foreground" />
           )}
         </button>
       </CardHeader>

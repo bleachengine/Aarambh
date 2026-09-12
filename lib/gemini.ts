@@ -344,6 +344,7 @@ function normalizeEvaluation(raw: unknown, exam: GeneratedExam, answers: Record<
       return {
         id: q.id,
         type: 'mcq',
+        question: q.question, // copied through from the exam, not from the AI
         userAnswer,
         correct,
         correctAnswer: q.correctAnswer,
@@ -365,6 +366,7 @@ function normalizeEvaluation(raw: unknown, exam: GeneratedExam, answers: Record<
     return {
       id: q.id,
       type: 'descriptive',
+      question: q.question, // copied through from the exam, not from the AI
       userAnswer: userAnswer ?? '',
       idealAnswer: matched?.idealAnswer ?? '',
       strengths: Array.isArray(matched?.strengths) ? matched.strengths : [],
@@ -703,23 +705,104 @@ async function solveAnswersOnce(
   return t;
 }
 
+/** Runs up to `sampleTarget` independent solve attempts on `model` in
+ * parallel, retrying failed slots until either enough succeed or
+ * `callBudget` total calls have been spent (whichever comes first). A single
+ * attempt can catch a model mid-hallucination; several independent ones
+ * rarely hallucinate the same way, which is what makes majority voting over
+ * them meaningfully more reliable than trusting any one attempt. Returns
+ * every successfully parsed response text; the caller does the voting. */
+async function collectEnsemble(
+  client: GoogleGenAI,
+  model: string,
+  prompt: string,
+  sampleTarget: number,
+  callBudget: number,
+): Promise<{ texts: string[]; quotaErr: unknown }> {
+  let callsMade = 0;
+  let quotaErr: unknown = null;
+
+  async function trySlot(): Promise<string | null> {
+    while (!quotaErr && callsMade < callBudget) {
+      callsMade++;
+      try {
+        return await solveAnswersOnce(client, model, prompt, 12_000);
+      } catch (err) {
+        if (isQuotaExceededError(err)) {
+          quotaErr = err; // won't clear in seconds - stop every slot, don't burn the budget
+          return null;
+        }
+        await new Promise((r) => setTimeout(r, 500));
+      }
+    }
+    return null;
+  }
+
+  const results = await Promise.all(Array.from({ length: sampleTarget }, () => trySlot()));
+  return { texts: results.filter((t): t is string => t !== null), quotaErr };
+}
+
+/** Tallies, per question id, how many ensemble samples proposed each answer
+ * (alongside one representative explanation for that answer). Samples that
+ * fail to parse are skipped rather than aborting the whole vote - a few bad
+ * samples out of several shouldn't discard the good ones. */
+function tallyVotes(texts: string[]): Map<string, Map<string, { count: number; explanation: string }>> {
+  const votes = new Map<string, Map<string, { count: number; explanation: string }>>();
+  for (const text of texts) {
+    let verified: ReturnType<typeof answerVerificationResultSchema.parse>;
+    try {
+      verified = answerVerificationResultSchema.parse(parseJsonLoose<unknown>(text));
+    } catch {
+      continue;
+    }
+    for (const a of verified.answers ?? []) {
+      const answer = (a.correctAnswer ?? '').trim();
+      if (!answer) continue;
+      let byAnswer = votes.get(a.id);
+      if (!byAnswer) {
+        byAnswer = new Map();
+        votes.set(a.id, byAnswer);
+      }
+      const entry = byAnswer.get(answer);
+      if (entry) {
+        entry.count++;
+        if (!entry.explanation && a.explanation) entry.explanation = a.explanation.trim();
+      } else {
+        byAnswer.set(answer, { count: 1, explanation: (a.explanation ?? '').trim() });
+      }
+    }
+  }
+  return votes;
+}
+
 /** Re-solves every MCQ's correct answer in a dedicated text-only pass,
- * separate from the PDF extraction. This matters because answer accuracy
- * measurably degrades when the extraction call is simultaneously reading a
- * scanned PDF and pulling out 100+ questions - isolating "just solve these"
- * recovers a lot of it. Overrides the extraction pass's answer/explanation
- * whenever the verifier returns an option-matching answer; leaves the
- * question untouched otherwise.
+ * separate from the PDF extraction / initial generation. This matters
+ * because answer accuracy measurably degrades when a single call is also
+ * juggling extraction or exam-generation at the same time - isolating "just
+ * solve these" recovers a lot of it on its own. On top of that isolation,
+ * this runs a self-consistency ensemble: several independent solves, with
+ * the majority answer winning per question, rather than trusting any single
+ * attempt. A lone attempt can hallucinate with full confidence; independent
+ * attempts rarely hallucinate the same way, so agreement across most of them
+ * is a much stronger correctness signal than one good-looking response.
  *
- * Model strategy: prefer the stronger SOLVE_MODEL (materially better on hard
- * domain questions), but it is intermittently overloaded (503). So we give it
- * ONE hard-time-bounded shot, and if it's unavailable, fall back to a still
- * valuable isolated re-solve on the reliable base MODEL. Either way we return
- * a dedicated-pass result; the stronger model just makes it better when it's
- * up. The whole thing stays comfortably under the route's 60s ceiling.
+ * Model strategy: sample the stronger SOLVE_MODEL first (materially better on
+ * hard domain questions) - up to 5 independent samples, retrying failed slots
+ * within a 7-call budget (it's intermittently overloaded, but its 503s fail
+ * fast, so a handful of retries usually still nets several real samples). If
+ * fewer than 2 samples come back (SOLVE_MODEL essentially down), fall back to
+ * an ensemble on the reliable base MODEL instead of giving up on voting
+ * altogether. Total spend across both tiers is capped at 10 calls - the whole
+ * pass still stays comfortably under the route's 60s ceiling since samples
+ * within a tier run in parallel.
  *
- * Intended for papers WITHOUT an official answer key (printed keys are ground
- * truth and are not second-guessed) - the caller gates on that. */
+ * Overrides the original answer/explanation only when the winning vote
+ * differs from it; on a genuine tie that still includes the original answer,
+ * the original is kept rather than flipped on a coin-flip.
+ *
+ * Intended for questions without a trusted external source of truth (e.g. no
+ * official printed answer key) - callers that have one should treat it as
+ * ground truth and skip this instead. */
 export async function verifyExamAnswers(exam: GeneratedExam): Promise<VerifyAnswersResult> {
   const mcqs = exam.questions.filter((q): q is MCQQuestion => q.type === 'mcq');
   if (mcqs.length === 0) return { exam, changedCount: 0, model: 'none' };
@@ -729,66 +812,51 @@ export async function verifyExamAnswers(exam: GeneratedExam): Promise<VerifyAnsw
     mcqs.map((q) => ({ id: q.id, question: q.question, options: q.options })),
   );
 
-  // Budget-aware model selection. SOLVE_MODEL is the one that gets hard
-  // questions right, but it's intermittently overloaded and its 503s fail
-  // FAST (~4s). So rather than one shot, we keep retrying it for the bulk of
-  // our time budget (many fast-failed 503s still leave room for several
-  // tries, sharply raising the odds we catch it while it's up), and reserve a
-  // final slice to fall back to the reliable base MODEL for a still-valuable
-  // isolated re-solve if SOLVE_MODEL never came up. Hard-bounded well under
-  // the route's 60s ceiling.
-  const OVERALL_BUDGET_MS = 52_000;
-  const FALLBACK_RESERVE_MS = 16_000; // time kept aside for the base-model floor
-  const deadline = Date.now() + OVERALL_BUDGET_MS;
+  const MIN_QUORUM = 2; // fewer real samples than this isn't a meaningful vote
 
-  let text: string | null = null;
-  let usedModel = '';
-  let lastErr: unknown;
-  while (Date.now() < deadline - FALLBACK_RESERVE_MS) {
-    const perAttempt = Math.min(18_000, deadline - FALLBACK_RESERVE_MS - Date.now());
-    if (perAttempt < 4_000) break;
-    try {
-      text = await solveAnswersOnce(client, SOLVE_MODEL, prompt, perAttempt);
-      usedModel = SOLVE_MODEL;
-      break;
-    } catch (err) {
-      lastErr = err;
-      if (isQuotaExceededError(err)) throw err; // won't clear in seconds - surface it
-      await new Promise((r) => setTimeout(r, 1200)); // brief backoff, then retry SOLVE_MODEL
-    }
-  }
-
-  if (text === null) {
-    // SOLVE_MODEL never came up within budget - fall back to the reliable base
-    // model for a still-worthwhile isolated re-solve (fixes the "knew it but
-    // output the wrong option" class even if it can't crack the hardest ones).
-    try {
-      text = await solveAnswersOnce(client, MODEL, prompt, Math.max(8_000, deadline - Date.now()));
+  let { texts, quotaErr } = await collectEnsemble(client, SOLVE_MODEL, prompt, 5, 7);
+  let usedModel = SOLVE_MODEL;
+  if (texts.length < MIN_QUORUM) {
+    // A different model is a completely separate quota bucket, so SOLVE_MODEL
+    // being quota-exhausted specifically must never skip this fallback - only
+    // a quota hit on BOTH models in a row is a real dead end.
+    const fallback = await collectEnsemble(client, MODEL, prompt, 3, 3);
+    if (fallback.texts.length > texts.length) {
+      texts = fallback.texts;
       usedModel = MODEL;
-    } catch (err) {
-      throw lastErr ?? err;
     }
+    quotaErr = texts.length === 0 ? (quotaErr ?? fallback.quotaErr) : null;
   }
 
-  const parsed = parseJsonLoose<unknown>(text);
-  const verified = answerVerificationResultSchema.parse(parsed);
-  const byId = new Map((verified.answers ?? []).map((a) => [a.id, a]));
+  if (texts.length === 0) {
+    throw quotaErr ?? new Error('The answer-verification model was unavailable for every attempt.');
+  }
 
+  const votes = tallyVotes(texts);
   let changedCount = 0;
   const questions = exam.questions.map((q) => {
     if (q.type !== 'mcq') return q;
-    const v = byId.get(q.id);
-    if (!v) return q;
-    const proposed = (v.correctAnswer ?? '').trim();
-    // Only accept the verifier's answer if it matches an option verbatim -
-    // never let it corrupt a question with a non-option string.
-    if (!proposed || !q.options.includes(proposed)) return q;
-    if (proposed === q.correctAnswer) return q;
+    const byAnswer = votes.get(q.id);
+    if (!byAnswer) return q;
+
+    // Only ever vote among answers that match one of THIS question's
+    // options verbatim - never let a hallucinated non-option string win.
+    const validEntries = Array.from(byAnswer.entries()).filter(([answer]) => q.options.includes(answer));
+    if (validEntries.length === 0) return q;
+
+    const maxCount = Math.max(...validEntries.map(([, v]) => v.count));
+    const winners = validEntries.filter(([, v]) => v.count === maxCount);
+    if (winners.length > 1 && winners.some(([answer]) => answer === q.correctAnswer)) {
+      return q; // genuine split decision that still includes the original - don't flip on a tie
+    }
+
+    const [winnerAnswer, winnerData] = winners[0];
+    if (winnerAnswer === q.correctAnswer) return q;
     changedCount++;
     return {
       ...q,
-      correctAnswer: proposed,
-      explanation: (v.explanation ?? '').trim() || q.explanation,
+      correctAnswer: winnerAnswer,
+      explanation: winnerData.explanation || q.explanation,
     };
   });
 
